@@ -69,15 +69,13 @@ class densenet201_1d(nn.Module):
         # # visualize---------------------
         # for name, midlayer in self.densenet._modules.items():
         #     test = x
-        #     print(test.shape)
         #     for i in range(len(midlayer)):
         #         test = midlayer[i](test)
-        #         if i == 4:
-        #             break
-        #             # print(i, test.shape)
-        #
+        #         # if i == 4:
+        #         #     break
+        #         #     # print(i, test.shape)
         #     return test
-        # # -------------------------------------
+        # -------------------------------------
 
         x = self.densenet(x)
         x = x.view(x.size()[0], -1)
@@ -109,6 +107,163 @@ class vgg19_1d(nn.Module):
         x = self.vgg(x)
         return x
 
+
+class mini_AE(nn.Module):
+    def __init__(self):
+        super(mini_AE, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 128, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
+            nn.Conv2d(128, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
+            nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
+            nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
+        )
+        # define: decoder
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(64, 64, 2, 2),
+            nn.ConvTranspose2d(64, 64, 2, 2),
+            nn.ConvTranspose2d(64, 128, 2, 2),
+            nn.ConvTranspose2d(128, 3, 2, 2),
+            nn.Tanh(),
+        )
+
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return encoded, decoded
+
+class VAE(nn.Module):
+    def __init__(self, dim, imgae_size, pretrain):
+        super(VAE, self).__init__()
+        self.cnn_encoder = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=16, kernel_size=3, stride=1),
+            nn.BatchNorm2d(num_features=16),
+            nn.RReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(in_channels=16, out_channels=8, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(num_features=8),
+            nn.RReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=1, stride=2),
+            )
+        output_size = self.linear_input((dim, imgae_size, imgae_size))
+        self.dnn_encoder = nn.Sequential(
+            nn.Linear(output_size, 100),
+            )
+
+        # VAE: These two layers are for getting logvar and mean
+        self.mean = nn.Linear(100, 64)
+        self.var = nn.Linear(100, 64)
+
+        self.dnn_decoder = nn.Sequential(
+            nn.Linear(64, output_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),
+            )
+        self.cnn_decoder = nn.Sequential(
+            nn.ConvTranspose2d(in_channels=8, out_channels=16, kernel_size=3, stride=2),
+            nn.BatchNorm2d(num_features=16),
+            nn.RReLU(inplace=True),
+            nn.ConvTranspose2d(in_channels=16, out_channels=8, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(num_features=8),
+            nn.RReLU(inplace=True),
+            nn.ConvTranspose2d(in_channels=8, out_channels=dim, kernel_size=2, stride=2, padding=1),
+            nn.Tanh()
+        )
+        self.cnn_encoder.apply(gaussian_weights_init)
+        self.dnn_encoder.apply(gaussian_weights_init)
+        self.dnn_decoder.apply(gaussian_weights_init)
+        self.cnn_decoder.apply(gaussian_weights_init)
+        self.pretrain = pretrain
+
+
+    def forward(self, out):
+        # encoder
+        out = self.cnn_encoder(out)
+        cnn_shape = out.shape
+        out = out.view(out.size()[0], -1)
+        out= self.dnn_encoder(out)
+        encoder, var = self.de_noise(out)
+        # decoder
+        out = self.dnn_decoder(encoder)
+        out = out.view([-1, cnn_shape[1], cnn_shape[2], cnn_shape[3]])
+        decoder = self.cnn_decoder(out)
+        return encoder, var, decoder
+
+    def linear_input(self, shape):
+        bs = 1
+        input = Variable(t.rand(bs, *shape))
+        output_feat = self._forward_features(input)
+        n_size = output_feat.data.view(bs, -1).size(1)
+        return n_size
+
+    def _forward_features(self, x):
+        out = self.cnn_encoder(x)
+        return out
+
+    def de_noise(self, out):
+        mean = self.mean(out)
+        var = self.var(out)
+        if self.pretrain:
+            return mean, var
+        noise = t.randn_like(mean)
+        std = t.exp(0.5 * var)
+        return noise.mul(std).add_(mean), var
+
+
+
+
+class Autoencoder(nn.Module):
+    def __init__(self, dim, imgae_size):
+        super(Autoencoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=16, kernel_size=3, stride=1),
+            nn.BatchNorm2d(num_features=16),
+            nn.RReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(in_channels=16, out_channels=8, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(num_features=8),
+            nn.RReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=1, stride=2),
+            )
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(in_channels=8, out_channels=16, kernel_size=3, stride=2),
+            nn.BatchNorm2d(num_features=16),
+            nn.RReLU(inplace=True),
+            nn.ConvTranspose2d(in_channels=16, out_channels=8, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(num_features=8),
+            nn.RReLU(inplace=True),
+            nn.ConvTranspose2d(in_channels=8, out_channels=dim, kernel_size=2, stride=2, padding=1),
+            nn.Tanh()
+        )
+
+
+        self.encoder.apply(gaussian_weights_init)
+        self.decoder.apply(gaussian_weights_init)
+
+    def forward(self, out):
+        encoder = self.encoder(out)
+        decoder = self.decoder(encoder)
+
+
+        # out = out.view(out.size()[0], -1)
+        # out = self.fc(out)
+        return encoder, decoder
+
+    def linear_input(self, shape):
+        bs = 1
+        input = Variable(t.rand(bs, *shape))
+        output_feat = self._forward_features(input)
+        n_size = output_feat.data.view(bs, -1).size(1)
+        return n_size
+
+    def _forward_features(self, x):
+        out = self.cnn(x)
+        return out
+
+
+
 # LeNet-5
 class ConvNet(nn.Module):
     def __init__(self, output_n, dim, imgae_size):
@@ -118,12 +273,12 @@ class ConvNet(nn.Module):
             self.conv = nn.Conv2d(dim, 3, kernel_size=1)
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5, stride=1),
             nn.BatchNorm2d(num_features=6),
             nn.RReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
-            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=1, stride=1, padding=1),
+            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=1),
             nn.BatchNorm2d(num_features=16),
             nn.RReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),
@@ -190,14 +345,6 @@ class Fully(nn.Module):
 
             nn.Dropout(p=0.5),
             nn.Linear(in_features=128, out_features=64),
-            nn.RReLU(inplace=True),
-
-            nn.Dropout(p=0.5),
-            nn.Linear(in_features=64, out_features=32),
-            nn.RReLU(inplace=True),
-
-            nn.Dropout(p=0.5),
-            nn.Linear(in_features=32, out_features=16),
             nn.RReLU(inplace=True),
 
             nn.Dropout(p=0.5),
